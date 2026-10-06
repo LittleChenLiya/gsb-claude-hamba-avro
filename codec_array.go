@@ -64,7 +64,9 @@ func (d *arrayDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 
 		for i := start; i < size; i++ {
 			elemPtr := sliceType.UnsafeGetIndex(ptr, i)
+			r.pushPathIndex(i)
 			d.decoder.Decode(elemPtr, r)
+			r.popPath()
 			if r.Error != nil {
 				r.Error = fmt.Errorf("reading %s: %w", d.typ.String(), r.Error)
 				return
@@ -103,7 +105,9 @@ func (e *arrayEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 			count := int64(0)
 			for j := i; j < i+blockLength && j < length; j++ {
 				elemPtr := e.typ.UnsafeGetIndex(ptr, j)
+				w.pushPathIndex(j)
 				e.encoder.Encode(elemPtr, w)
+				w.popPath()
 				if w.Error != nil && !errors.Is(w.Error, io.EOF) {
 					w.Error = fmt.Errorf("%s: %w", e.typ.String(), w.Error)
 					return count

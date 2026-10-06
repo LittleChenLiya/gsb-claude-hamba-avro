@@ -31,6 +31,7 @@ type Reader struct {
 	buf    []byte
 	head   int
 	tail   int
+	path   []PathSegment
 	Error  error
 }
 
@@ -57,7 +58,46 @@ func (r *Reader) Reset(b []byte) *Reader {
 	r.buf = b
 	r.head = 0
 	r.tail = len(b)
+	r.path = r.path[:0]
 	return r
+}
+
+// resetPath clears any conversion path context, so it cannot leak into the
+// next decode.
+func (r *Reader) resetPath() {
+	r.path = r.path[:0]
+}
+
+// pushPathField records a record field segment in the conversion path.
+func (r *Reader) pushPathField(name string) {
+	if !r.cfg.typeConverters.enabled.Load() {
+		return
+	}
+	r.path = append(r.path, PathSegment{Kind: FieldSegment, Field: name})
+}
+
+// pushPathKey records a map key segment in the conversion path.
+func (r *Reader) pushPathKey(key string) {
+	if !r.cfg.typeConverters.enabled.Load() {
+		return
+	}
+	r.path = append(r.path, PathSegment{Kind: KeySegment, Key: key})
+}
+
+// pushPathIndex records an array index segment in the conversion path.
+func (r *Reader) pushPathIndex(i int) {
+	if !r.cfg.typeConverters.enabled.Load() {
+		return
+	}
+	r.path = append(r.path, PathSegment{Kind: IndexSegment, Index: i})
+}
+
+// popPath removes the last segment from the conversion path.
+func (r *Reader) popPath() {
+	if !r.cfg.typeConverters.enabled.Load() {
+		return
+	}
+	r.path = r.path[:len(r.path)-1]
 }
 
 // ReportError record an error in iterator instance with current position.

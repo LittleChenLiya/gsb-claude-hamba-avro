@@ -63,6 +63,7 @@ func decoderOfStruct(d *decoderContext, schema Schema, typ reflect2.Type) ValDec
 	for _, field := range rec.Fields() {
 		if field.action == FieldIgnore {
 			fields = append(fields, &structFieldDecoder{
+				name:    field.Name(),
 				decoder: createSkipDecoder(field.Type()),
 			})
 			continue
@@ -89,6 +90,7 @@ func decoderOfStruct(d *decoderContext, schema Schema, typ reflect2.Type) ValDec
 			}
 
 			fields = append(fields, &structFieldDecoder{
+				name:    field.Name(),
 				decoder: createSkipDecoder(field.Type()),
 			})
 			continue
@@ -97,6 +99,7 @@ func decoderOfStruct(d *decoderContext, schema Schema, typ reflect2.Type) ValDec
 		if field.action == FieldSetDefault {
 			if field.hasDef {
 				fields = append(fields, &structFieldDecoder{
+					name:    field.Name(),
 					field:   sf.Field,
 					decoder: createDefaultDecoder(d, field, sf.Field[len(sf.Field)-1].Type()),
 				})
@@ -107,6 +110,7 @@ func decoderOfStruct(d *decoderContext, schema Schema, typ reflect2.Type) ValDec
 
 		dec := decoderOfType(d, field.Type(), sf.Field[len(sf.Field)-1].Type())
 		fields = append(fields, &structFieldDecoder{
+			name:    field.Name(),
 			field:   sf.Field,
 			decoder: dec,
 		})
@@ -116,6 +120,7 @@ func decoderOfStruct(d *decoderContext, schema Schema, typ reflect2.Type) ValDec
 }
 
 type structFieldDecoder struct {
+	name    string
 	field   []*reflect2.UnsafeStructField
 	decoder ValDecoder
 }
@@ -129,7 +134,9 @@ func (d *structDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 	for _, field := range d.fields {
 		// Skip case
 		if field.field == nil {
+			r.pushPathField(field.name)
 			field.decoder.Decode(nil, r)
+			r.popPath()
 			continue
 		}
 
@@ -150,7 +157,9 @@ func (d *structDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 				fieldPtr = *((*unsafe.Pointer)(fieldPtr))
 			}
 		}
+		r.pushPathField(field.name)
 		field.decoder.Decode(fieldPtr, r)
+		r.popPath()
 
 		if r.Error != nil && !errors.Is(r.Error, io.EOF) {
 			for _, f := range field.field {
@@ -169,6 +178,7 @@ func encoderOfStruct(e *encoderContext, rec *RecordSchema, typ reflect2.Type) Va
 		sf := structDesc.Fields.Get(field.Name())
 		if sf != nil {
 			fields = append(fields, &structFieldEncoder{
+				name:    field.Name(),
 				field:   sf.Field,
 				encoder: encoderOfType(e, field.Type(), sf.Field[len(sf.Field)-1].Type()),
 			})
@@ -191,6 +201,7 @@ func encoderOfStruct(e *encoderContext, rec *RecordSchema, typ reflect2.Type) Va
 			if field.Type().Type() == Union && field.Type().(*UnionSchema).Nullable() {
 				defaultType := reflect2.TypeOf(&def)
 				fields = append(fields, &structFieldEncoder{
+					name:       field.Name(),
 					defaultPtr: reflect2.PtrOf(&def),
 					encoder:    encoderOfNullableUnion(e, field.Type(), defaultType),
 				})
@@ -204,6 +215,7 @@ func encoderOfStruct(e *encoderContext, rec *RecordSchema, typ reflect2.Type) Va
 			defaultEncoder = &onePtrEncoder{defaultEncoder}
 		}
 		fields = append(fields, &structFieldEncoder{
+			name:       field.Name(),
 			defaultPtr: reflect2.PtrOf(def),
 			encoder:    defaultEncoder,
 		})
@@ -212,6 +224,7 @@ func encoderOfStruct(e *encoderContext, rec *RecordSchema, typ reflect2.Type) Va
 }
 
 type structFieldEncoder struct {
+	name       string
 	field      []*reflect2.UnsafeStructField
 	defaultPtr unsafe.Pointer
 	encoder    ValEncoder
@@ -226,7 +239,9 @@ func (e *structEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 	for _, field := range e.fields {
 		// Default case
 		if field.field == nil {
+			w.pushPathField(field.name)
 			field.encoder.Encode(field.defaultPtr, w)
+			w.popPath()
 			continue
 		}
 
@@ -247,7 +262,9 @@ func (e *structEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 				fieldPtr = *((*unsafe.Pointer)(fieldPtr))
 			}
 		}
+		w.pushPathField(field.name)
 		field.encoder.Encode(fieldPtr, w)
+		w.popPath()
 
 		if w.Error != nil && !errors.Is(w.Error, io.EOF) {
 			for _, f := range field.field {
@@ -314,7 +331,9 @@ func (d *recordMapDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 
 	for _, field := range d.fields {
 		elemPtr := d.elemType.UnsafeNew()
+		r.pushPathField(field.name)
 		field.decoder.Decode(elemPtr, r)
+		r.popPath()
 		if field.skip {
 			continue
 		}
@@ -395,11 +414,15 @@ func (e *recordMapEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 			}
 
 			defPtr := reflect2.PtrOf(field.def)
+			w.pushPathField(field.name)
 			field.defEncoder.Encode(defPtr, w)
+			w.popPath()
 			continue
 		}
 
+		w.pushPathField(field.name)
 		field.encoder.Encode(valPtr, w)
+		w.popPath()
 
 		if w.Error != nil && !errors.Is(w.Error, io.EOF) {
 			w.Error = fmt.Errorf("%s: %w", field.name, w.Error)

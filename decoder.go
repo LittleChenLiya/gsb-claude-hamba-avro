@@ -33,6 +33,7 @@ func (d *Decoder) Decode(v any) error {
 		}
 	}
 
+	d.r.resetPath()
 	d.r.ReadVal(d.s, v)
 
 	//nolint:errorlint // Only direct EOF errors should be discarded.

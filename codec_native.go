@@ -337,11 +337,20 @@ func getLogicalSchema(schema Schema) LogicalSchema {
 
 func getLogicalType(schema Schema) LogicalType {
 	ls := getLogicalSchema(schema)
-	if ls == nil {
-		return ""
+	if ls != nil {
+		return ls.Type()
 	}
 
-	return ls.Type()
+	// Unknown logical types are not parsed into a logical schema, but are
+	// explicitly preserved as a schema property, so they can still be
+	// reported, e.g. to custom type converters.
+	if ps, ok := schema.(PropertySchema); ok {
+		if lt, ok := ps.Prop("logicalType").(string); ok {
+			return LogicalType(lt)
+		}
+	}
+
+	return ""
 }
 
 type nullCodec struct{}

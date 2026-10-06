@@ -68,9 +68,12 @@ func (d *mapDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 		}
 
 		for range l {
-			keyPtr := reflect2.PtrOf(r.ReadString())
+			key := r.ReadString()
+			keyPtr := reflect2.PtrOf(key)
 			elemPtr := d.elemType.UnsafeNew()
+			r.pushPathKey(key)
 			d.decoder.Decode(elemPtr, r)
+			r.popPath()
 			if r.Error != nil {
 				r.Error = fmt.Errorf("reading map[string]%s: %w", d.elemType.String(), r.Error)
 				return
@@ -125,14 +128,17 @@ func (d *mapDecoderUnmarshaler) Decode(ptr unsafe.Pointer, r *Reader) {
 				keyObj = d.keyType.UnsafeIndirect(keyPtr)
 			}
 			unmarshaler := keyObj.(encoding.TextUnmarshaler)
-			err := unmarshaler.UnmarshalText([]byte(r.ReadString()))
+			key := r.ReadString()
+			err := unmarshaler.UnmarshalText([]byte(key))
 			if err != nil {
 				r.ReportError("mapDecoderUnmarshaler", err.Error())
 				return
 			}
 
 			elemPtr := d.elemType.UnsafeNew()
+			r.pushPathKey(key)
 			d.decoder.Decode(elemPtr, r)
+			r.popPath()
 
 			d.mapType.UnsafeSetIndex(ptr, keyPtr, elemPtr)
 		}
@@ -170,8 +176,11 @@ func (e *mapEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 			var i int
 			for i = 0; iter.HasNext() && i < blockLength; i++ {
 				keyPtr, elemPtr := iter.UnsafeNext()
-				w.WriteString(*((*string)(keyPtr)))
+				key := *((*string)(keyPtr))
+				w.WriteString(key)
+				w.pushPathKey(key)
 				e.encoder.Encode(elemPtr, w)
+				w.popPath()
 			}
 
 			return int64(i)
@@ -230,7 +239,9 @@ func (e *mapEncoderMarshaller) Encode(ptr unsafe.Pointer, w *Writer) {
 				}
 				w.WriteString(string(b))
 
+				w.pushPathKey(string(b))
 				e.encoder.Encode(elemPtr, w)
+				w.popPath()
 			}
 			return int64(i)
 		})
