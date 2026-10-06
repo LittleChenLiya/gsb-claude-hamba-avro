@@ -2,7 +2,9 @@ package avro
 
 import (
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 var errNoTypeConverter = errors.New("no type converter")
@@ -30,6 +32,12 @@ type specificType struct {
 // TypeConverters holds the user-provided type conversion functions.
 type TypeConverters struct {
 	convs sync.Map // map[specificType]TypeConverter
+	n     atomic.Int64
+}
+
+// has returns true when at least one type converter is registered.
+func (c *TypeConverters) has() bool {
+	return c.n.Load() > 0
 }
 
 // NewTypeConverters creates a new type converter.
@@ -43,33 +51,77 @@ func (c *TypeConverters) RegisterTypeConverters(convs ...TypeConverter) {
 		if typ := conv.Type(); len(typ) == 0 {
 			continue
 		}
-		c.convs.Store(specificType{typ: conv.Type(), lt: conv.LogicalType()}, conv)
+		key := specificType{typ: conv.Type(), lt: conv.LogicalType()}
+		if _, loaded := c.convs.LoadOrStore(key, conv); loaded {
+			c.convs.Store(key, conv)
+			continue
+		}
+		c.n.Add(1)
 	}
 }
 
 // EncodeTypeConvert runs the encode type conversion function for the given value and schema.
 func (c *TypeConverters) EncodeTypeConvert(in any, schema Schema) (any, error) {
+	return c.EncodeTypeConvertContext(nil, in, schema)
+}
+
+// EncodeTypeConvertContext runs the encode type conversion function for the
+// given value and schema, passing the explicit conversion path to converters
+// implementing ContextTypeConverter. The conversion callback is run exactly
+// once for the value. A conversion failure is reported with the path of the
+// value and never returns a partial result.
+func (c *TypeConverters) EncodeTypeConvertContext(path ConverterPath, in any, schema Schema) (any, error) {
 	conv, ok := c.getTypeConverter(schema)
 	if !ok {
 		return in, errNoTypeConverter
 	}
 
-	return conv.EncodeTypeConvert(in, schema)
+	if cconv, ok := conv.(ContextTypeConverter); ok {
+		out, err := cconv.EncodeTypeConvertContext(converterContext(path, schema), in, schema)
+		return out, conversionError(path, err)
+	}
+
+	out, err := conv.EncodeTypeConvert(in, schema)
+	return out, conversionError(path, err)
 }
 
 // DecodeTypeConvert runs the decode type conversion function for the given value and schema.
 func (c *TypeConverters) DecodeTypeConvert(in any, schema Schema) (any, error) {
+	return c.DecodeTypeConvertContext(nil, in, schema)
+}
+
+// DecodeTypeConvertContext runs the decode type conversion function for the
+// given value and schema, passing the explicit conversion path to converters
+// implementing ContextTypeConverter. The conversion callback is run exactly
+// once for the value. A conversion failure is reported with the path of the
+// value and never returns a partial result.
+func (c *TypeConverters) DecodeTypeConvertContext(path ConverterPath, in any, schema Schema) (any, error) {
 	conv, ok := c.getTypeConverter(schema)
 	if !ok {
 		return in, errNoTypeConverter
 	}
 
-	return conv.DecodeTypeConvert(in, schema)
+	if cconv, ok := conv.(ContextTypeConverter); ok {
+		out, err := cconv.DecodeTypeConvertContext(converterContext(path, schema), in, schema)
+		return out, conversionError(path, err)
+	}
+
+	out, err := conv.DecodeTypeConvert(in, schema)
+	return out, conversionError(path, err)
+}
+
+// conversionError annotates a conversion error with the explicit path of the
+// value that failed to convert.
+func conversionError(path ConverterPath, err error) error {
+	if err == nil || errors.Is(err, errNoTypeConverter) || len(path) == 0 {
+		return err
+	}
+	return fmt.Errorf("avro: cannot convert value at %s: %w", path, err)
 }
 
 func (c *TypeConverters) getTypeConverter(schema Schema) (TypeConverter, bool) {
 	typ := schema.Type()
-	lt := getLogicalType(schema)
+	lt := getLogicalTypeOrProp(schema)
 	conv, ok := c.convs.Load(specificType{typ: typ, lt: lt})
 	if !ok {
 		return nil, false

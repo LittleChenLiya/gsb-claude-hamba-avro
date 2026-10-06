@@ -29,9 +29,15 @@ func (d *efaceDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 	pObj := (*any)(ptr)
 
 	defer func() {
-		obj, err := r.cfg.typeConverters.DecodeTypeConvert(*pObj, d.schema)
-		if err != nil && !errors.Is(err, errNoTypeConverter) {
+		obj, err := r.cfg.typeConverters.DecodeTypeConvertContext(r.paths.path, *pObj, d.schema)
+		if errors.Is(err, errNoTypeConverter) {
+			return
+		}
+		if err != nil {
+			// A failed conversion does not produce a partial result.
 			r.Error = err
+			*pObj = nil
+			return
 		}
 		*pObj = obj
 	}()
@@ -66,7 +72,7 @@ type interfaceEncoder struct {
 func (e *interfaceEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 	obj := e.typ.UnsafeIndirect(ptr)
 
-	obj, err := w.cfg.typeConverters.EncodeTypeConvert(obj, e.schema)
+	obj, err := w.cfg.typeConverters.EncodeTypeConvertContext(w.paths.path, obj, e.schema)
 	if err != nil && !errors.Is(err, errNoTypeConverter) {
 		w.Error = err
 		return

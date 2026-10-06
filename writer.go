@@ -13,6 +13,7 @@ type WriterFunc func(w *Writer)
 func WithWriterConfig(cfg API) WriterFunc {
 	return func(w *Writer) {
 		w.cfg = cfg.(*frozenConfig)
+		w.paths.cfg = w.cfg
 	}
 }
 
@@ -22,6 +23,8 @@ type Writer struct {
 	out   io.Writer
 	buf   []byte
 	Error error
+
+	paths pathTracker
 }
 
 // NewWriter creates a new Writer.
@@ -32,6 +35,7 @@ func NewWriter(out io.Writer, bufSize int, opts ...WriterFunc) *Writer {
 		buf:   make([]byte, 0, bufSize),
 		Error: nil,
 	}
+	writer.paths.cfg = writer.cfg
 
 	for _, opt := range opts {
 		opt(writer)
@@ -44,6 +48,7 @@ func NewWriter(out io.Writer, bufSize int, opts ...WriterFunc) *Writer {
 func (w *Writer) Reset(out io.Writer) {
 	w.out = out
 	w.buf = w.buf[:0]
+	w.paths.resetPath()
 }
 
 // Buffered returns the number of buffered bytes.

@@ -61,6 +61,9 @@ func (d *mapDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 		d.mapType.UnsafeSet(ptr, d.mapType.UnsafeMakeMap(0))
 	}
 
+	r.paths.pushPathKey()
+	defer r.paths.popPath()
+
 	for {
 		l, _ := r.ReadBlockHeader()
 		if l == 0 {
@@ -68,7 +71,9 @@ func (d *mapDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 		}
 
 		for range l {
-			keyPtr := reflect2.PtrOf(r.ReadString())
+			key := r.ReadString()
+			r.paths.setPathKey(key)
+			keyPtr := reflect2.PtrOf(key)
 			elemPtr := d.elemType.UnsafeNew()
 			d.decoder.Decode(elemPtr, r)
 			if r.Error != nil {
@@ -109,6 +114,9 @@ func (d *mapDecoderUnmarshaler) Decode(ptr unsafe.Pointer, r *Reader) {
 		d.mapType.UnsafeSet(ptr, d.mapType.UnsafeMakeMap(0))
 	}
 
+	r.paths.pushPathKey()
+	defer r.paths.popPath()
+
 	for {
 		l, _ := r.ReadBlockHeader()
 		if l == 0 {
@@ -125,7 +133,9 @@ func (d *mapDecoderUnmarshaler) Decode(ptr unsafe.Pointer, r *Reader) {
 				keyObj = d.keyType.UnsafeIndirect(keyPtr)
 			}
 			unmarshaler := keyObj.(encoding.TextUnmarshaler)
-			err := unmarshaler.UnmarshalText([]byte(r.ReadString()))
+			key := r.ReadString()
+			r.paths.setPathKey(key)
+			err := unmarshaler.UnmarshalText([]byte(key))
 			if err != nil {
 				r.ReportError("mapDecoderUnmarshaler", err.Error())
 				return
@@ -165,12 +175,17 @@ func (e *mapEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 
 	iter := e.mapType.UnsafeIterate(ptr)
 
+	w.paths.pushPathKey()
+	defer w.paths.popPath()
+
 	for {
 		wrote := w.WriteBlockCB(func(w *Writer) int64 {
 			var i int
 			for i = 0; iter.HasNext() && i < blockLength; i++ {
 				keyPtr, elemPtr := iter.UnsafeNext()
-				w.WriteString(*((*string)(keyPtr)))
+				key := *((*string)(keyPtr))
+				w.paths.setPathKey(key)
+				w.WriteString(key)
 				e.encoder.Encode(elemPtr, w)
 			}
 
@@ -211,6 +226,9 @@ func (e *mapEncoderMarshaller) Encode(ptr unsafe.Pointer, w *Writer) {
 
 	iter := e.mapType.UnsafeIterate(ptr)
 
+	w.paths.pushPathKey()
+	defer w.paths.popPath()
+
 	for {
 		wrote := w.WriteBlockCB(func(w *Writer) int64 {
 			var i int
@@ -228,6 +246,7 @@ func (e *mapEncoderMarshaller) Encode(ptr unsafe.Pointer, w *Writer) {
 					w.Error = err
 					return int64(0)
 				}
+				w.paths.setPathKey(string(b))
 				w.WriteString(string(b))
 
 				e.encoder.Encode(elemPtr, w)

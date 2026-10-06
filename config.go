@@ -68,23 +68,27 @@ func (c Config) Freeze() API {
 
 	api.readerPool = &sync.Pool{
 		New: func() any {
-			return &Reader{
+			r := &Reader{
 				cfg:    api,
 				reader: nil,
 				buf:    nil,
 				head:   0,
 				tail:   0,
 			}
+			r.paths.cfg = api
+			return r
 		},
 	}
 	api.writerPool = &sync.Pool{
 		New: func() any {
-			return &Writer{
+			w := &Writer{
 				cfg:   api,
 				out:   nil,
 				buf:   make([]byte, 0, 512),
 				Error: nil,
 			}
+			w.paths.cfg = api
+			return w
 		},
 	}
 

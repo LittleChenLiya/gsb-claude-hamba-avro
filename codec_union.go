@@ -181,7 +181,7 @@ func (e *mapUnionEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 		val = []struct{}{}
 	}
 
-	val, err := w.cfg.typeConverters.EncodeTypeConvert(val, e.schema)
+	val, err := w.cfg.typeConverters.EncodeTypeConvertContext(w.paths.path, val, e.schema)
 	if err != nil && !errors.Is(err, errNoTypeConverter) {
 		w.Error = err
 		return
@@ -243,12 +243,15 @@ func (d *unionNullableDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 	defer func() {
 		if !d.isPtr {
 			obj := d.typ.UnsafeIndirect(ptr)
-			obj, err := r.cfg.typeConverters.DecodeTypeConvert(obj, d.schema)
+			obj, err := r.cfg.typeConverters.DecodeTypeConvertContext(r.paths.path, obj, d.schema)
 			if errors.Is(err, errNoTypeConverter) {
 				return
 			}
 			if err != nil {
+				// A failed conversion does not produce a partial result.
 				r.Error = err
+				*(*unsafe.Pointer)(ptr) = nil
+				return
 			}
 			if obj == nil {
 				*(*unsafe.Pointer)(ptr) = nil
@@ -258,12 +261,15 @@ func (d *unionNullableDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 			return
 		}
 		obj := d.typ.UnsafeIndirect(*((*unsafe.Pointer)(ptr)))
-		obj, err := r.cfg.typeConverters.DecodeTypeConvert(obj, d.schema)
+		obj, err := r.cfg.typeConverters.DecodeTypeConvertContext(r.paths.path, obj, d.schema)
 		if errors.Is(err, errNoTypeConverter) {
 			return
 		}
 		if err != nil {
+			// A failed conversion does not produce a partial result.
 			r.Error = err
+			*((*unsafe.Pointer)(ptr)) = nil
+			return
 		}
 		*((*unsafe.Pointer)(ptr)) = reflect2.PtrOf(obj)
 	}()
@@ -458,9 +464,15 @@ func (d *unionResolvedDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 	}
 
 	defer func() {
-		obj, err := r.cfg.typeConverters.DecodeTypeConvert(*pObj, d.schema)
-		if err != nil && !errors.Is(err, errNoTypeConverter) {
+		obj, err := r.cfg.typeConverters.DecodeTypeConvertContext(r.paths.path, *pObj, d.schema)
+		if errors.Is(err, errNoTypeConverter) {
+			return
+		}
+		if err != nil {
+			// A failed conversion does not produce a partial result.
 			r.Error = err
+			*pObj = nil
+			return
 		}
 		*pObj = obj
 	}()

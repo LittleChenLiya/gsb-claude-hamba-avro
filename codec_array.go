@@ -46,6 +46,9 @@ func (d *arrayDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 		sliceType.UnsafeSet(ptr, sliceType.UnsafeMakeSlice(0, 0))
 	}
 
+	r.paths.pushPathIndex()
+	defer r.paths.popPath()
+
 	for {
 		l, _ := r.ReadBlockHeader()
 		if l == 0 {
@@ -63,6 +66,7 @@ func (d *arrayDecoder) Decode(ptr unsafe.Pointer, r *Reader) {
 		sliceType.UnsafeGrow(ptr, size)
 
 		for i := start; i < size; i++ {
+			r.paths.setPathIndex(i)
 			elemPtr := sliceType.UnsafeGetIndex(ptr, i)
 			d.decoder.Decode(elemPtr, r)
 			if r.Error != nil {
@@ -98,10 +102,14 @@ func (e *arrayEncoder) Encode(ptr unsafe.Pointer, w *Writer) {
 	blockLength := e.blockLength
 	length := e.typ.UnsafeLengthOf(ptr)
 
+	w.paths.pushPathIndex()
+	defer w.paths.popPath()
+
 	for i := 0; i < length; i += blockLength {
 		w.WriteBlockCB(func(w *Writer) int64 {
 			count := int64(0)
 			for j := i; j < i+blockLength && j < length; j++ {
+				w.paths.setPathIndex(j)
 				elemPtr := e.typ.UnsafeGetIndex(ptr, j)
 				e.encoder.Encode(elemPtr, w)
 				if w.Error != nil && !errors.Is(w.Error, io.EOF) {

@@ -20,6 +20,7 @@ type ReaderFunc func(r *Reader)
 func WithReaderConfig(cfg API) ReaderFunc {
 	return func(r *Reader) {
 		r.cfg = cfg.(*frozenConfig)
+		r.paths.cfg = r.cfg
 	}
 }
 
@@ -32,6 +33,8 @@ type Reader struct {
 	head   int
 	tail   int
 	Error  error
+
+	paths pathTracker
 }
 
 // NewReader creates a new Reader.
@@ -43,6 +46,7 @@ func NewReader(r io.Reader, bufSize int, opts ...ReaderFunc) *Reader {
 		head:   0,
 		tail:   0,
 	}
+	reader.paths.cfg = reader.cfg
 
 	for _, opt := range opts {
 		opt(reader)
@@ -57,6 +61,7 @@ func (r *Reader) Reset(b []byte) *Reader {
 	r.buf = b
 	r.head = 0
 	r.tail = len(b)
+	r.paths.resetPath()
 	return r
 }
 

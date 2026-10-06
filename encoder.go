@@ -26,6 +26,8 @@ func NewEncoderForSchema(schema Schema, w io.Writer) *Encoder {
 
 // Encode writes the Avro encoding of v to the stream.
 func (e *Encoder) Encode(v any) error {
+	// Clear the conversion path so no context leaks from a previous encode.
+	e.w.paths.resetPath()
 	e.w.WriteVal(e.s, v)
 	_ = e.w.Flush()
 	return e.w.Error

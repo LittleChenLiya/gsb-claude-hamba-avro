@@ -33,6 +33,8 @@ func (d *Decoder) Decode(v any) error {
 		}
 	}
 
+	// Clear the conversion path so no context leaks from a previous decode.
+	d.r.paths.resetPath()
 	d.r.ReadVal(d.s, v)
 
 	//nolint:errorlint // Only direct EOF errors should be discarded.
