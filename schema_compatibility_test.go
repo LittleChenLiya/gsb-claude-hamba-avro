@@ -296,6 +296,159 @@ func TestSchemaCompatibility_CompatibleUsesCacheWithError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestSchemaCompatibility_CompatibleStrictLogicalTypes(t *testing.T) {
+	tests := []struct {
+		name    string
+		reader  string
+		writer  string
+		strict  bool
+		wantErr assert.ErrorAssertionFunc
+	}{
+		{
+			name:    "Matching Decimal",
+			reader:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			strict:  true,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Decimal Scale Mismatch",
+			reader:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":3}`,
+			strict:  true,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Decimal Precision Mismatch",
+			reader:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `{"type":"bytes","logicalType":"decimal","precision":6,"scale":2}`,
+			strict:  true,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Different Logical Types",
+			reader:  `{"type":"int","logicalType":"date"}`,
+			writer:  `{"type":"int","logicalType":"time-millis"}`,
+			strict:  true,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Matching Decimal Reader And Plain Bytes Writer",
+			reader:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `"bytes"`,
+			strict:  true,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Plain Bytes Reader And Matching Decimal Writer",
+			reader:  `"bytes"`,
+			writer:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			strict:  true,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Fixed Decimal Scale Mismatch",
+			reader:  `{"type":"fixed","name":"test.dec","size":6,"logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `{"type":"fixed","name":"test.dec","size":6,"logicalType":"decimal","precision":4,"scale":3}`,
+			strict:  true,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Record Scale Conflict",
+			reader:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`,
+			writer:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":3}}]}`,
+			strict:  true,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Record Matching Decimal",
+			reader:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`,
+			writer:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`,
+			strict:  true,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Record Decimal And Plain Bytes",
+			reader:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`,
+			writer:  `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":"bytes"}]}`,
+			strict:  true,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Decimal Scale Mismatch Allowed Without Strict Option",
+			reader:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}`,
+			writer:  `{"type":"bytes","logicalType":"decimal","precision":4,"scale":3}`,
+			strict:  false,
+			wantErr: assert.NoError,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			r, err := avro.ParseWithCache(test.reader, "", &avro.SchemaCache{})
+			require.NoError(t, err)
+			w, err := avro.ParseWithCache(test.writer, "", &avro.SchemaCache{})
+			require.NoError(t, err)
+
+			opts := []avro.SchemaCompatibilityOptFn{}
+			if test.strict {
+				opts = append(opts, avro.WithStrictLogicalTypes())
+			}
+			sc := avro.NewSchemaCompatibility(opts...)
+
+			err = sc.Compatible(r, w)
+
+			test.wantErr(t, err)
+		})
+	}
+}
+
+func TestSchemaCompatibility_CompatibleStrictLogicalTypesFieldPath(t *testing.T) {
+	reader := `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`
+	writer := `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":3}}]}`
+
+	r := avro.MustParse(reader)
+	w := avro.MustParse(writer)
+	sc := avro.NewSchemaCompatibility(avro.WithStrictLogicalTypes())
+
+	err := sc.Compatible(r, w)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reader field path b")
+	assert.Contains(t, err.Error(), "writer field path b")
+	assert.Contains(t, err.Error(), "decimal(4,2)")
+	assert.Contains(t, err.Error(), "decimal(4,3)")
+}
+
+func TestSchemaCompatibility_StrictLogicalTypesRejectsResolve(t *testing.T) {
+	reader := `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":2}}]}`
+	writer := `{"type":"record","name":"test","namespace":"org.hamba.avro","fields":[{"name":"a","type":"int"},{"name":"b","type":{"type":"bytes","logicalType":"decimal","precision":4,"scale":3}}]}`
+
+	r := avro.MustParse(reader)
+	w := avro.MustParse(writer)
+
+	t.Run("strict rejects resolve plan compilation", func(t *testing.T) {
+		sc := avro.NewSchemaCompatibility(avro.WithStrictLogicalTypes())
+
+		_, err := sc.Resolve(r, w)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reader field path b")
+		assert.Contains(t, err.Error(), "writer field path b")
+	})
+
+	t.Run("default mode compiles resolve plan", func(t *testing.T) {
+		sc := avro.NewSchemaCompatibility()
+
+		_, err := sc.Resolve(r, w)
+
+		assert.NoError(t, err)
+	})
+}
+
 func TestSchemaCompatibility_Resolve(t *testing.T) {
 	tests := []struct {
 		name   string

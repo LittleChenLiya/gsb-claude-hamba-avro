@@ -21,11 +21,40 @@ type compatKey struct {
 // SchemaCompatibility determines the compatibility of schemas.
 type SchemaCompatibility struct {
 	cache sync.Map // map[compatKey]error
+
+	// strictLogicalTypes requires reader and writer logical types to match
+	// exactly when both schemas carry a logical type.
+	strictLogicalTypes bool
+}
+
+// SchemaCompatibilityOptFn is a configuration function for SchemaCompatibility.
+type SchemaCompatibilityOptFn func(*SchemaCompatibility)
+
+// WithStrictLogicalTypes enables strict reader/writer logical type matching.
+//
+// When enabled, schemas backed by the same underlying type are only compatible
+// if their logical types are the same. For the decimal logical type, the
+// precision and scale must also match; a decimal with a different precision or
+// scale is rejected even though its underlying bytes or fixed representation is
+// identical.
+//
+// A schema without a logical type keeps the default structural compatibility
+// rules, e.g. plain bytes remains compatible with a decimal bytes field.
+func WithStrictLogicalTypes() SchemaCompatibilityOptFn {
+	return func(c *SchemaCompatibility) {
+		c.strictLogicalTypes = true
+	}
 }
 
 // NewSchemaCompatibility creates a new schema compatibility instance.
-func NewSchemaCompatibility() *SchemaCompatibility {
-	return &SchemaCompatibility{}
+func NewSchemaCompatibility(opts ...SchemaCompatibilityOptFn) *SchemaCompatibility {
+	c := &SchemaCompatibility{}
+
+	for _, opt := range opts {
+		opt(c)
+	}
+
+	return c
 }
 
 // Compatible determines the compatibility if the reader and writer schemas.
@@ -122,6 +151,10 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 		return fmt.Errorf("reader schema %s not compatible with writer schema %s", reader.Type(), writer.Type())
 	}
 
+	if err := c.checkLogicalTypes(reader, writer); err != nil {
+		return err
+	}
+
 	switch reader.Type() {
 	case Array:
 		return c.compatible(reader.(*ArraySchema).Items(), writer.(*ArraySchema).Items())
@@ -179,6 +212,46 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 	return nil
 }
 
+// checkLogicalTypes enforces strict reader/writer logical type matching.
+//
+// When strict logical type matching is not enabled it always returns nil. A
+// schema without a logical type is left to the default structural
+// compatibility rules.
+func (c *SchemaCompatibility) checkLogicalTypes(reader, writer Schema) error {
+	if !c.strictLogicalTypes {
+		return nil
+	}
+
+	rl, rok := logicalType(reader)
+	wl, wok := logicalType(writer)
+	if !rok || !wok || rl == nil || wl == nil {
+		return nil
+	}
+
+	if rl.Type() != wl.Type() {
+		return fmt.Errorf("reader logical type %s does not match writer logical type %s", rl.Type(), wl.Type())
+	}
+
+	if rd, ok := rl.(*DecimalLogicalSchema); ok {
+		wd := wl.(*DecimalLogicalSchema)
+		if rd.Precision() != wd.Precision() || rd.Scale() != wd.Scale() {
+			return fmt.Errorf("reader decimal(%d,%d) does not match writer decimal(%d,%d)",
+				rd.Precision(), rd.Scale(), wd.Precision(), wd.Scale())
+		}
+	}
+
+	return nil
+}
+
+// logicalType returns the logical type of a schema that can carry one.
+func logicalType(s Schema) (LogicalSchema, bool) {
+	if ls, ok := s.(LogicalTypeSchema); ok {
+		return ls.Logical(), true
+	}
+
+	return nil, false
+}
+
 func (c *SchemaCompatibility) checkSchemaName(reader, writer NamedSchema) error {
 	if reader.Name() != writer.Name() {
 		if slices.Contains(reader.Aliases(), writer.FullName()) {
@@ -234,6 +307,10 @@ func (c *SchemaCompatibility) checkRecordFields(reader, writer *RecordSchema) er
 		}
 
 		if err := c.compatible(field.Type(), f.Type()); err != nil {
+			if c.strictLogicalTypes {
+				return fmt.Errorf("reader field path %s and writer field path %s are not compatible: %w",
+					field.Name(), f.Name(), err)
+			}
 			return err
 		}
 	}
