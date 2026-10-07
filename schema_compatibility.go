@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -21,19 +23,42 @@ type compatKey struct {
 // SchemaCompatibility determines the compatibility of schemas.
 type SchemaCompatibility struct {
 	cache sync.Map // map[compatKey]error
+
+	strictLogicalTypes bool
+}
+
+// SchemaCompatibilityOption configures a SchemaCompatibility instance.
+type SchemaCompatibilityOption func(*SchemaCompatibility)
+
+// WithStrictLogicalTypes enables strict logical type compatibility between
+// the reader and writer schemas.
+//
+// When enabled, schemas bearing a logical type (e.g. a bytes or fixed decimal)
+// are only compatible when their logical types match exactly; a differing
+// decimal precision or scale is rejected even though the underlying byte
+// types are identical. Schemas without logical types keep the original
+// structural compatibility rules. When not enabled, behavior is unchanged.
+func WithStrictLogicalTypes() SchemaCompatibilityOption {
+	return func(c *SchemaCompatibility) {
+		c.strictLogicalTypes = true
+	}
 }
 
 // NewSchemaCompatibility creates a new schema compatibility instance.
-func NewSchemaCompatibility() *SchemaCompatibility {
-	return &SchemaCompatibility{}
+func NewSchemaCompatibility(opts ...SchemaCompatibilityOption) *SchemaCompatibility {
+	c := &SchemaCompatibility{}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 // Compatible determines the compatibility if the reader and writer schemas.
 func (c *SchemaCompatibility) Compatible(reader, writer Schema) error {
-	return c.compatible(reader, writer)
+	return c.compatible(reader, writer, nil, nil)
 }
 
-func (c *SchemaCompatibility) compatible(reader, writer Schema) error {
+func (c *SchemaCompatibility) compatible(reader, writer Schema, readerPath, writerPath []string) error {
 	key := compatKey{reader: reader.Fingerprint(), writer: writer.Fingerprint()}
 	if err, ok := c.cache.Load(key); ok {
 		if _, ok := err.(recursionError); ok {
@@ -49,7 +74,7 @@ func (c *SchemaCompatibility) compatible(reader, writer Schema) error {
 	}
 
 	c.cache.Store(key, recursionError{})
-	err := c.match(reader, writer)
+	err := c.match(reader, writer, readerPath, writerPath)
 	if err != nil {
 		// We dont want to pay the cost of fmt.Errorf every time
 		err = errors.New(err.Error())
@@ -58,7 +83,7 @@ func (c *SchemaCompatibility) compatible(reader, writer Schema) error {
 	return err
 }
 
-func (c *SchemaCompatibility) match(reader, writer Schema) error {
+func (c *SchemaCompatibility) match(reader, writer Schema, readerPath, writerPath []string) error {
 	// If the schema is a reference, get the actual schema
 	if reader.Type() == Ref {
 		reader = reader.(*RefSchema).Schema()
@@ -67,11 +92,17 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 		writer = writer.(*RefSchema).Schema()
 	}
 
+	if c.strictLogicalTypes {
+		if err := checkLogicalTypes(reader, writer, readerPath, writerPath); err != nil {
+			return err
+		}
+	}
+
 	if reader.Type() != writer.Type() {
 		if writer.Type() == Union {
 			// Reader must be compatible with all types in writer
 			for _, schema := range writer.(*UnionSchema).Types() {
-				if err := c.compatible(reader, schema); err != nil {
+				if err := c.compatible(reader, schema, readerPath, writerPath); err != nil {
 					return err
 				}
 			}
@@ -83,7 +114,7 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 			// Writer must be compatible with at least one reader schema
 			var err error
 			for _, schema := range reader.(*UnionSchema).Types() {
-				err = c.compatible(schema, writer)
+				err = c.compatible(schema, writer, readerPath, writerPath)
 				if err == nil {
 					return nil
 				}
@@ -124,10 +155,10 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 
 	switch reader.Type() {
 	case Array:
-		return c.compatible(reader.(*ArraySchema).Items(), writer.(*ArraySchema).Items())
+		return c.compatible(reader.(*ArraySchema).Items(), writer.(*ArraySchema).Items(), readerPath, writerPath)
 
 	case Map:
-		return c.compatible(reader.(*MapSchema).Values(), writer.(*MapSchema).Values())
+		return c.compatible(reader.(*MapSchema).Values(), writer.(*MapSchema).Values(), readerPath, writerPath)
 
 	case Fixed:
 		r := reader.(*FixedSchema)
@@ -164,13 +195,13 @@ func (c *SchemaCompatibility) match(reader, writer Schema) error {
 			return err
 		}
 
-		if err := c.checkRecordFields(r, w); err != nil {
+		if err := c.checkRecordFields(r, w, readerPath, writerPath); err != nil {
 			return err
 		}
 
 	case Union:
 		for _, schema := range writer.(*UnionSchema).Types() {
-			if err := c.compatible(reader, schema); err != nil {
+			if err := c.compatible(reader, schema, readerPath, writerPath); err != nil {
 				return err
 			}
 		}
@@ -220,7 +251,7 @@ func (c *SchemaCompatibility) identicalEnumSymbols(reader, writer *EnumSchema) b
 	return true
 }
 
-func (c *SchemaCompatibility) checkRecordFields(reader, writer *RecordSchema) error {
+func (c *SchemaCompatibility) checkRecordFields(reader, writer *RecordSchema, readerPath, writerPath []string) error {
 	for _, field := range reader.Fields() {
 		f, ok := c.getField(writer.Fields(), field, func(gfo *getFieldOptions) {
 			gfo.fieldAlias = true
@@ -233,12 +264,78 @@ func (c *SchemaCompatibility) checkRecordFields(reader, writer *RecordSchema) er
 			return fmt.Errorf("reader field %s is missing in writer schema and has no default", field.Name())
 		}
 
-		if err := c.compatible(field.Type(), f.Type()); err != nil {
+		rPath := appendFieldPath(readerPath, field.Name())
+		wPath := appendFieldPath(writerPath, f.Name())
+		if err := c.compatible(field.Type(), f.Type(), rPath, wPath); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// appendFieldPath returns a copy of path with name appended.
+func appendFieldPath(path []string, name string) []string {
+	p := make([]string, len(path)+1)
+	copy(p, path)
+	p[len(path)] = name
+	return p
+}
+
+// formatFieldPath renders a field path for error messages.
+func formatFieldPath(path []string) string {
+	if len(path) == 0 {
+		return "<root>"
+	}
+	return strings.Join(path, ".")
+}
+
+// logicalTypeString renders a logical schema for error messages.
+func logicalTypeString(l LogicalSchema) string {
+	if l == nil {
+		return "<none>"
+	}
+	if d, ok := l.(*DecimalLogicalSchema); ok {
+		return "decimal(precision=" + strconv.Itoa(d.Precision()) + ", scale=" + strconv.Itoa(d.Scale()) + ")"
+	}
+	return string(l.Type())
+}
+
+// logicalTypesEqual determines if two logical schemas are exactly equal.
+func logicalTypesEqual(reader, writer LogicalSchema) bool {
+	if reader.Type() != writer.Type() {
+		return false
+	}
+	if rd, ok := reader.(*DecimalLogicalSchema); ok {
+		wd, ok := writer.(*DecimalLogicalSchema)
+		return ok && rd.Precision() == wd.Precision() && rd.Scale() == wd.Scale()
+	}
+	return true
+}
+
+// checkLogicalTypes enforces strict logical type compatibility between the
+// reader and writer schemas. Schemas without logical types on both sides keep
+// the original structural compatibility rules.
+func checkLogicalTypes(reader, writer Schema, readerPath, writerPath []string) error {
+	rl, rok := reader.(LogicalTypeSchema)
+	wl, wok := writer.(LogicalTypeSchema)
+	if !rok || !wok {
+		return nil
+	}
+
+	r, w := rl.Logical(), wl.Logical()
+	if r == nil && w == nil {
+		return nil
+	}
+	if r != nil && w != nil && logicalTypesEqual(r, w) {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"reader field %s logical type %s is not compatible with writer field %s logical type %s",
+		formatFieldPath(readerPath), logicalTypeString(r),
+		formatFieldPath(writerPath), logicalTypeString(w),
+	)
 }
 
 type getFieldOptions struct {
@@ -275,7 +372,7 @@ func (c *SchemaCompatibility) getField(a []*Field, f *Field, optFns ...func(*get
 //
 // It fails if the writer and reader schemas are not compatible.
 func (c *SchemaCompatibility) Resolve(reader, writer Schema) (Schema, error) {
-	if err := c.compatible(reader, writer); err != nil {
+	if err := c.compatible(reader, writer, nil, nil); err != nil {
 		return nil, err
 	}
 
@@ -297,7 +394,7 @@ func (c *SchemaCompatibility) resolve(reader, writer Schema) (schema Schema, res
 			for _, schema := range reader.(*UnionSchema).Types() {
 				// Compatibility is not guaranteed for every Union reader schema.
 				// Therefore, we need to check compatibility in every iteration.
-				if err := c.compatible(schema, writer); err != nil {
+				if err := c.compatible(schema, writer, nil, nil); err != nil {
 					continue
 				}
 				sch, _, err := c.resolve(schema, writer)

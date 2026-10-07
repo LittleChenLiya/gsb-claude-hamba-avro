@@ -1035,3 +1035,134 @@ func TestSchemaCompatibility_ResolveWithEnums(t *testing.T) {
 
 	assert.Equal(t, "D", got)
 }
+
+func TestSchemaCompatibility_StrictLogicalTypes(t *testing.T) {
+	recordWithFields := func(amountType string) string {
+		return `{"type":"record","name":"test","fields":[
+			{"name":"id","type":"long"},
+			{"name":"amount","type":` + amountType + `}]}`
+	}
+	decimal := func(prec, scale int) string {
+		return `{"type":"bytes","logicalType":"decimal","precision":` + strconv.Itoa(prec) +
+			`,"scale":` + strconv.Itoa(scale) + `}`
+	}
+
+	tests := []struct {
+		name    string
+		reader  string
+		writer  string
+		wantErr assert.ErrorAssertionFunc
+	}{
+		{
+			name:    "Record Field Decimal Scale Mismatch",
+			reader:  recordWithFields(decimal(10, 2)),
+			writer:  recordWithFields(decimal(10, 3)),
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Record Field Decimal Precision Mismatch",
+			reader:  recordWithFields(decimal(10, 2)),
+			writer:  recordWithFields(decimal(12, 2)),
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Record Field Matching Decimal",
+			reader:  recordWithFields(decimal(10, 2)),
+			writer:  recordWithFields(decimal(10, 2)),
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Record Field Plain Bytes",
+			reader:  recordWithFields(`"bytes"`),
+			writer:  recordWithFields(`"bytes"`),
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Record Field Logical Type Missing On Writer",
+			reader:  recordWithFields(decimal(10, 2)),
+			writer:  recordWithFields(`"bytes"`),
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Fixed Decimal Scale Mismatch",
+			reader:  `{"type":"fixed","name":"dec","size":4,"logicalType":"decimal","precision":9,"scale":2}`,
+			writer:  `{"type":"fixed","name":"dec","size":4,"logicalType":"decimal","precision":9,"scale":3}`,
+			wantErr: assert.Error,
+		},
+		{
+			name:    "Matching Non-Decimal Logical Type",
+			reader:  `{"type":"int","logicalType":"date"}`,
+			writer:  `{"type":"int","logicalType":"date"}`,
+			wantErr: assert.NoError,
+		},
+		{
+			name:    "Different Logical Types",
+			reader:  `{"type":"int","logicalType":"date"}`,
+			writer:  `{"type":"int","logicalType":"time-millis"}`,
+			wantErr: assert.Error,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			r := avro.MustParse(test.reader)
+			w := avro.MustParse(test.writer)
+
+			sc := avro.NewSchemaCompatibility(avro.WithStrictLogicalTypes())
+			test.wantErr(t, sc.Compatible(r, w))
+		})
+	}
+}
+
+func TestSchemaCompatibility_StrictLogicalTypesErrorPath(t *testing.T) {
+	reader := avro.MustParse(`{"type":"record","name":"test","fields":[
+		{"name":"id","type":"long"},
+		{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`)
+	writer := avro.MustParse(`{"type":"record","name":"test","fields":[
+		{"name":"id","type":"long"},
+		{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":3}}]}`)
+
+	sc := avro.NewSchemaCompatibility(avro.WithStrictLogicalTypes())
+
+	err := sc.Compatible(reader, writer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "amount")
+	assert.Contains(t, err.Error(), "scale=2")
+	assert.Contains(t, err.Error(), "scale=3")
+
+	// The resolution plan compilation surfaces the same error.
+	_, err = sc.Resolve(reader, writer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "amount")
+}
+
+func TestSchemaCompatibility_StrictLogicalTypesDefaultModeUnchanged(t *testing.T) {
+	reader := avro.MustParse(`{"type":"record","name":"test","fields":[
+		{"name":"id","type":"long"},
+		{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}`)
+	writer := avro.MustParse(`{"type":"record","name":"test","fields":[
+		{"name":"id","type":"long"},
+		{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":3}}]}`)
+
+	// Without the strict option, decimal precision/scale differences are allowed.
+	sc := avro.NewSchemaCompatibility()
+	assert.NoError(t, sc.Compatible(reader, writer))
+
+	_, err := sc.Resolve(reader, writer)
+	assert.NoError(t, err)
+}
+
+func TestSchemaCompatibility_StrictLogicalTypesNestedFieldPath(t *testing.T) {
+	reader := avro.MustParse(`{"type":"record","name":"outer","fields":[
+		{"name":"inner","type":{"type":"record","name":"inner","fields":[
+			{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":2}}]}}]}`)
+	writer := avro.MustParse(`{"type":"record","name":"outer","fields":[
+		{"name":"inner","type":{"type":"record","name":"inner","fields":[
+			{"name":"amount","type":{"type":"bytes","logicalType":"decimal","precision":10,"scale":4}}]}}]}`)
+
+	sc := avro.NewSchemaCompatibility(avro.WithStrictLogicalTypes())
+
+	err := sc.Compatible(reader, writer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inner.amount")
+}
