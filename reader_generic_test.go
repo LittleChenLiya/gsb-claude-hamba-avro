@@ -210,6 +210,46 @@ func TestReader_ReadNext(t *testing.T) {
 	}
 }
 
+func TestReader_ReadNextResolvedEnum(t *testing.T) {
+	reader := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["A", "B"], "default": "A"}`)
+	writer := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["X", "B"]}`)
+
+	schema, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		data    []byte
+		want    any
+		wantErr require.ErrorAssertionFunc
+	}{
+		{
+			name:    "known symbol",
+			data:    []byte{0x02}, // writer index 1 -> "B"
+			want:    "B",
+			wantErr: require.NoError,
+		},
+		{
+			name:    "unknown symbol with default",
+			data:    []byte{0x00}, // writer index 0 -> "X", missing in reader
+			want:    "A",
+			wantErr: require.NoError,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			r := avro.NewReader(bytes.NewReader(test.data), 10)
+
+			got := r.ReadNext(schema)
+
+			test.wantErr(t, r.Error)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 func TestReader_ReadNextUnsupportedType(t *testing.T) {
 	schema := avro.NewPrimitiveSchema(avro.Type("test"), nil)
 	r := avro.NewReader(bytes.NewReader([]byte{0x01}), 10)

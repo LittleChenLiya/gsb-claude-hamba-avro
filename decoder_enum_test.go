@@ -158,6 +158,90 @@ func TestDecoder_EnumTextUnmarshalerError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestDecoder_EnumResolved(t *testing.T) {
+	defer ConfigTeardown()
+
+	reader := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["A", "B"], "default": "A"}`)
+	writer := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["X", "B"]}`)
+
+	schema, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		// Writer symbols are mapped by name, not by position.
+		{name: "known symbol", data: []byte{0x02}, want: "B"},
+		// A writer symbol missing in the reader falls back to the reader default.
+		{name: "unknown symbol with default", data: []byte{0x00}, want: "A"},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			var got string
+			err := avro.Unmarshal(schema, test.data, &got)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestDecoder_EnumResolvedUnknownSymbolWithoutDefault(t *testing.T) {
+	defer ConfigTeardown()
+
+	reader := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["A", "B"]}`)
+	writer := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["X", "B"]}`)
+
+	// The resolution plan must be rejected before any data is consumed.
+	_, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+
+	assert.Error(t, err)
+}
+
+func TestDecoder_EnumResolvedDefaultMustBeReaderSymbol(t *testing.T) {
+	defer ConfigTeardown()
+
+	// A default that is not a declared reader symbol is rejected while
+	// parsing the schema, not while decoding data.
+	_, err := avro.Parse(`{"type":"enum", "name": "test", "symbols": ["A", "B"], "default": "X"}`)
+
+	assert.Error(t, err)
+}
+
+func TestDecoder_EnumResolvedTextUnmarshaler(t *testing.T) {
+	defer ConfigTeardown()
+
+	reader := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["foo", "bar"], "default": "foo"}`)
+	writer := avro.MustParse(`{"type":"enum", "name": "test", "symbols": ["baz", "bar"]}`)
+
+	schema, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name string
+		data []byte
+		want testEnumTextUnmarshaler
+	}{
+		{name: "known symbol", data: []byte{0x02}, want: testEnumTextUnmarshaler(1)},
+		{name: "unknown symbol with default", data: []byte{0x00}, want: testEnumTextUnmarshaler(0)},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			var got testEnumTextUnmarshaler
+			err := avro.Unmarshal(schema, test.data, &got)
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
 type testEnumUnmarshalerObj struct {
 	A testEnumTextUnmarshaler `avro:"a"`
 }

@@ -1035,3 +1035,20 @@ func TestSchemaCompatibility_ResolveWithEnums(t *testing.T) {
 
 	assert.Equal(t, "D", got)
 }
+
+func TestSchemaCompatibility_ResolveEnumUnknownSymbolWithoutDefault(t *testing.T) {
+	reader := avro.MustParse(`{"type": "enum", "name": "Enum", "symbols": ["A", "B"]}`)
+	writer := avro.MustParse(`{"type": "enum", "name": "Enum", "symbols": ["X", "B"]}`)
+
+	// The unknown writer symbol must be rejected while compiling the
+	// resolution plan, before any data is consumed.
+	_, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+
+	assert.Error(t, err)
+}
+
+func TestSchemaCompatibility_ResolveEnumDefaultMustBeReaderSymbol(t *testing.T) {
+	_, err := avro.Parse(`{"type": "enum", "name": "Enum", "symbols": ["A", "B"], "default": "X"}`)
+
+	assert.Error(t, err)
+}
