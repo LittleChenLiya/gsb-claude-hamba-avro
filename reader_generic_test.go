@@ -210,6 +210,32 @@ func TestReader_ReadNext(t *testing.T) {
 	}
 }
 
+func TestReader_ReadNextResolvedEnumDefault(t *testing.T) {
+	reader := avro.MustParse(`{"type": "enum", "name": "test", "symbols": ["foo", "bar"], "default": "bar"}`)
+	writer := avro.MustParse(`{"type": "enum", "name": "test", "symbols": ["foo", "bar", "baz"]}`)
+
+	resolved, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+	require.NoError(t, err)
+
+	t.Run("known symbol", func(t *testing.T) {
+		r := avro.NewReader(bytes.NewReader([]byte{0x02}), 10)
+
+		got := r.ReadNext(resolved)
+
+		require.NoError(t, r.Error)
+		assert.Equal(t, "bar", got)
+	})
+
+	t.Run("unknown symbol uses default", func(t *testing.T) {
+		r := avro.NewReader(bytes.NewReader([]byte{0x04}), 10)
+
+		got := r.ReadNext(resolved)
+
+		require.NoError(t, r.Error)
+		assert.Equal(t, "bar", got)
+	})
+}
+
 func TestReader_ReadNextUnsupportedType(t *testing.T) {
 	schema := avro.NewPrimitiveSchema(avro.Type("test"), nil)
 	r := avro.NewReader(bytes.NewReader([]byte{0x01}), 10)

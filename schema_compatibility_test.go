@@ -1018,6 +1018,86 @@ func TestSchemaCompatibility_ResolveWithFieldMissingInWriterAndReaderStruct(t *t
 	assert.Equal(t, want, result)
 }
 
+func TestSchemaCompatibility_ResolveWithEnumDefault(t *testing.T) {
+	// The writer added a symbol unknown to the reader.
+	writer := avro.MustParse(`{"type": "enum", "name": "E", "symbols": ["A", "B", "C"]}`)
+
+	tests := []struct {
+		name    string
+		reader  string
+		idx     byte
+		want    string
+		wantErr bool
+	}{
+		{
+			name:   "Known Symbol",
+			reader: `{"type": "enum", "name": "E", "symbols": ["A", "B"], "default": "B"}`,
+			idx:    0x00,
+			want:   "A",
+		},
+		{
+			name:   "Known Symbol Keeps Its Mapping",
+			reader: `{"type": "enum", "name": "E", "symbols": ["A", "B"], "default": "B"}`,
+			idx:    0x02,
+			want:   "B",
+		},
+		{
+			name:   "Unknown Symbol Falls Back To Default",
+			reader: `{"type": "enum", "name": "E", "symbols": ["A", "B"], "default": "B"}`,
+			idx:    0x04, // writer symbol "C"
+			want:   "B",
+		},
+		{
+			name:    "Unknown Symbol Without Default",
+			reader:  `{"type": "enum", "name": "E", "symbols": ["A", "B"]}`,
+			idx:     0x04, // writer symbol "C"
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			reader := avro.MustParse(test.reader)
+
+			sc := avro.NewSchemaCompatibility()
+			if test.wantErr {
+				_, err := sc.Resolve(reader, writer)
+				require.Error(t, err)
+				return
+			}
+
+			resolved, err := sc.Resolve(reader, writer)
+			require.NoError(t, err)
+
+			var got string
+			err = avro.Unmarshal(resolved, []byte{test.idx}, &got)
+			require.NoError(t, err)
+			assert.Equal(t, test.want, got)
+		})
+	}
+}
+
+func TestSchemaCompatibility_ResolveWithEnumDefaultGeneric(t *testing.T) {
+	reader := avro.MustParse(`{"type": "enum", "name": "E", "symbols": ["A", "B"], "default": "B"}`)
+	writer := avro.MustParse(`{"type": "enum", "name": "E", "symbols": ["A", "B", "C"]}`)
+
+	resolved, err := avro.NewSchemaCompatibility().Resolve(reader, writer)
+	require.NoError(t, err)
+
+	var got any
+	err = avro.Unmarshal(resolved, []byte{0x04}, &got) // writer symbol "C"
+	require.NoError(t, err)
+	assert.Equal(t, "B", got)
+}
+
+func TestSchemaCompatibility_ResolveWithInvalidEnumDefault(t *testing.T) {
+	// A default that is not a reader symbol must fail while building the
+	// reader schema, before any data is produced or consumed.
+	_, err := avro.Parse(`{"type": "enum", "name": "E", "symbols": ["A", "B"], "default": "C"}`)
+	require.Error(t, err)
+}
+
 func TestSchemaCompatibility_ResolveWithEnums(t *testing.T) {
 	reader := avro.MustParse(`{"type": "enum", "name": "Enum", "symbols": ["A", "B", "C", "D"]}`)
 	writer := avro.MustParse(`{"type": "enum", "name": "Enum", "symbols": ["B", "C", "D"]}`)

@@ -72,13 +72,13 @@ func (r *Reader) ReadNext(schema Schema) any {
 	case Ref:
 		return r.ReadNext(schema.(*RefSchema).Schema())
 	case Enum:
-		symbols := schema.(*EnumSchema).Symbols()
-		idx := int(r.ReadInt())
-		if idx < 0 || idx >= len(symbols) {
+		enum := schema.(*EnumSchema)
+		symbol, ok := enum.Symbol(int(r.ReadInt()))
+		if !ok {
 			r.ReportError("Read", "unknown enum symbol")
 			return nil
 		}
-		return symbols[idx]
+		return symbol
 	case Array:
 		arr := []any{}
 		r.ReadArrayCB(func(r *Reader) bool {
